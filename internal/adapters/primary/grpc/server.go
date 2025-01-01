@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -8,26 +9,38 @@ import (
 	"sync"
 
 	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc/gen/proto"
+	"github.com/arthurdotwork/chat/internal/adapters/secondary/messenger"
+	"github.com/arthurdotwork/chat/internal/domain"
+	"github.com/google/uuid"
 )
+
+type ChatService interface {
+	Join(ctx context.Context, user domain.User) (domain.User, error)
+	SendMessage(ctx context.Context, message domain.Message) error
+}
 
 type ChatServer struct {
 	proto.UnimplementedChatServiceServer
+	chatService ChatService
 }
 
-func NewChatServer() *ChatServer {
-	return &ChatServer{}
+func NewChatServer(chatService ChatService) *ChatServer {
+	return &ChatServer{
+		chatService: chatService,
+	}
 }
 
 func (s *ChatServer) Chat(stream proto.ChatService_ChatServer) error {
 	ctx := stream.Context()
 
 	var (
-		joinInfo *proto.JoinRoom
-		sink     = make(chan error, 1)
-		wg       sync.WaitGroup
+		sink          = make(chan error, 1)
+		wg            sync.WaitGroup
+		connectedUser *domain.User
 	)
 
 	slog.DebugContext(ctx, "client connected")
+	messageManager := messenger.NewMessenger(stream)
 
 	wg.Add(1)
 	go func() {
@@ -39,23 +52,29 @@ func (s *ChatServer) Chat(stream proto.ChatService_ChatServer) error {
 					return
 				}
 
-				slog.Debug("error receiving message here", "error", err)
-				sink <- err
+				sink <- fmt.Errorf("error receiving message: %w", err)
 				return
 			}
 
-			slog.Debug("received message", "message", msg)
-
 			switch m := msg.Message.(type) {
 			case *proto.ClientMessage_Join:
-				if joinInfo != nil {
-					slog.DebugContext(ctx, "client already joined", "client", joinInfo.UserName)
+				if connectedUser != nil {
 					continue
 				}
 
-				joinInfo = m.Join
+				user := domain.User{
+					ID:        uuid.New(),
+					Name:      m.Join.UserName,
+					Messenger: messageManager,
+				}
 
-				slog.DebugContext(ctx, "client joined", "client", joinInfo.UserName)
+				u, err := s.chatService.Join(ctx, user)
+				if err != nil {
+					sink <- fmt.Errorf("error joining chat: %w", err)
+					return
+				}
+
+				connectedUser = &u
 
 				_ = stream.Send(&proto.ServerMessage{
 					Message: &proto.ServerMessage_JoinResponse{
@@ -65,23 +84,19 @@ func (s *ChatServer) Chat(stream proto.ChatService_ChatServer) error {
 					},
 				})
 			case *proto.ClientMessage_Chat:
-				if joinInfo == nil {
-					slog.ErrorContext(ctx, "client not joined")
+				if connectedUser == nil {
 					continue
 				}
 
-				slog.DebugContext(ctx, "client sent message", "client", joinInfo.UserName, "message", m.Chat.Content)
-
-				msg := &proto.ServerMessage_Chat{
-					Chat: &proto.ChatMessage{
-						UserName: joinInfo.UserName,
-						Content:  m.Chat.Content,
-					},
+				message := domain.Message{
+					Content: m.Chat.Content,
+					Sender:  *connectedUser,
 				}
 
-				_ = stream.Send(&proto.ServerMessage{
-					Message: msg,
-				})
+				if err := s.chatService.SendMessage(ctx, message); err != nil {
+					sink <- fmt.Errorf("error sending message: %w", err)
+					return
+				}
 			default:
 				slog.ErrorContext(ctx, "unknown message type", "message", m)
 				sink <- fmt.Errorf("unknown message type")
@@ -94,7 +109,7 @@ func (s *ChatServer) Chat(stream proto.ChatService_ChatServer) error {
 		slog.DebugContext(ctx, "client disconnected")
 		return nil
 	case err := <-sink:
-		slog.ErrorContext(ctx, "error receiving message", "error", err)
-		return err
+		slog.ErrorContext(ctx, "error handling message", "error", err)
+		return fmt.Errorf("error handling message: %w", err)
 	}
 }

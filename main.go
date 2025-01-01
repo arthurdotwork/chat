@@ -11,6 +11,8 @@ import (
 
 	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc"
 	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc/gen/proto"
+	"github.com/arthurdotwork/chat/internal/adapters/secondary/store"
+	"github.com/arthurdotwork/chat/internal/domain"
 	"github.com/arthurdotwork/chat/internal/infrastructure/log"
 
 	"github.com/spf13/cobra"
@@ -41,7 +43,10 @@ func main() {
 		Use:   "server",
 		Short: "Start the chat server",
 		Run: func(cmd *cobra.Command, args []string) {
-			chatServer := grpc.NewChatServer()
+			memoryRoomStore := store.NewMemoryRoomStore()
+			chatService := domain.NewChatService(memoryRoomStore)
+
+			chatServer := grpc.NewChatServer(chatService)
 
 			srv := grpcserver.NewServer()
 			proto.RegisterChatServiceServer(srv, chatServer)

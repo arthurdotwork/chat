@@ -3,6 +3,7 @@ module github.com/arthurdotwork/chat
 go 1.23.2
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/spf13/cobra v1.8.1
 	google.golang.org/grpc v1.69.2
 	google.golang.org/protobuf v1.36.1

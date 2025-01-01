@@ -1,0 +1,5 @@
+quiet: true
+with-expecter: true
+dir: "{{.InterfaceDir}}/mocks"
+outpkg: mocks
+packages:

@@ -64,9 +64,37 @@ func main() {
 			slog.DebugContext(ctx, "starting server", "address", addr)
 
 			go func() {
+				slog.DebugContext(ctx, "server started", "address", addr)
 				if err := srv.Serve(lis); err != nil {
 					slog.ErrorContext(ctx, "error serving", "error", err)
 					sink <- err
+				}
+			}()
+
+			go func() {
+				tickEachSecond := time.NewTicker(1 * time.Second)
+				defer tickEachSecond.Stop()
+
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-tickEachSecond.C:
+						conn, err := grpcserver.DialContext(ctx, addr, grpcserver.WithInsecure())
+						if err != nil {
+							slog.ErrorContext(ctx, "error dialing", "error", err)
+							return
+						}
+						conn.Close()
+
+						connectedUsers, err := memoryRoomStore.GetConnectedUsers(ctx)
+						if err != nil {
+							slog.ErrorContext(ctx, "error getting connected users", "error", err)
+							continue
+						}
+
+						slog.DebugContext(ctx, "connected users", "count", len(connectedUsers))
+					}
 				}
 			}()
 
@@ -74,26 +102,25 @@ func main() {
 			case <-ctx.Done():
 				slog.DebugContext(ctx, "initiating server shutdown")
 
-				// Create a timeout context for graceful shutdown
-				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer shutdownCancel()
+				go func() {
+					srv.GracefulStop()
+				}()
 
 				// Channel to signal shutdown completion
 				done := make(chan struct{})
 
-				go func() {
-					srv.GracefulStop()
-					close(done)
-				}()
-
-				// Wait for either graceful shutdown or timeout
-				select {
-				case <-shutdownCtx.Done():
-					slog.WarnContext(ctx, "graceful shutdown timed out, forcing stop")
-					srv.Stop()
-				case <-done:
-					slog.DebugContext(ctx, "graceful shutdown completed")
+				if err := chatService.Close(context.WithoutCancel(ctx), done); err != nil {
+					slog.ErrorContext(ctx, "error closing chat service", "error", err)
 				}
+
+				<-done
+
+				// Create a timeout context for graceful shutdown
+				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer shutdownCancel()
+
+				<-shutdownCtx.Done()
+				srv.Stop()
 			case err := <-sink:
 				slog.ErrorContext(ctx, "error serving", "error", err)
 			}

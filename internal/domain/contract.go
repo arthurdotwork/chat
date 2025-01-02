@@ -15,4 +15,5 @@ type RoomStore interface {
 
 type Messenger interface {
 	SendMessage(ctx context.Context, message Message) error
+	SendServerClosingNotification(ctx context.Context) error
 }

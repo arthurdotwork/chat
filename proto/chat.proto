@@ -19,7 +19,12 @@ message ServerMessage {
     JoinResponse join_response = 1;
     ChatMessage chat = 2;
     Error error = 3;
+    ServerClosing server_closing = 4;
   }
+}
+
+message ServerClosing {
+  string message = 1;
 }
 
 message JoinRoom {

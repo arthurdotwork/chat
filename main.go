@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc"
 	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc/gen/proto"
@@ -71,8 +72,28 @@ func main() {
 
 			select {
 			case <-ctx.Done():
-				slog.DebugContext(ctx, "shutting down server")
-				srv.GracefulStop()
+				slog.DebugContext(ctx, "initiating server shutdown")
+
+				// Create a timeout context for graceful shutdown
+				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer shutdownCancel()
+
+				// Channel to signal shutdown completion
+				done := make(chan struct{})
+
+				go func() {
+					srv.GracefulStop()
+					close(done)
+				}()
+
+				// Wait for either graceful shutdown or timeout
+				select {
+				case <-shutdownCtx.Done():
+					slog.WarnContext(ctx, "graceful shutdown timed out, forcing stop")
+					srv.Stop()
+				case <-done:
+					slog.DebugContext(ctx, "graceful shutdown completed")
+				}
 			case err := <-sink:
 				slog.ErrorContext(ctx, "error serving", "error", err)
 			}

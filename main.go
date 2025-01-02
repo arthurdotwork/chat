@@ -48,6 +48,21 @@ func main() {
 
 	rootCmd.AddCommand(serverCmd)
 
+	clientCmd := &cobra.Command{
+		Use:   "client",
+		Short: "Start the chat client",
+		RunE: func(c *cobra.Command, args []string) error {
+			if err := cmd.Client(ctx, c); err != nil {
+				slog.ErrorContext(ctx, "error starting client", "error", err)
+				return err
+			}
+
+			return nil
+		},
+	}
+
+	rootCmd.AddCommand(clientCmd)
+
 	if err := rootCmd.Execute(); err != nil {
 		slog.ErrorContext(ctx, "error executing command", "error", err)
 	}

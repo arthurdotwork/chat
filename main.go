@@ -2,15 +2,20 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
-	"github.com/arthurdotwork/chat/cmd"
+	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc"
+	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc/gen/proto"
+	"github.com/arthurdotwork/chat/internal/adapters/secondary/store"
+	"github.com/arthurdotwork/chat/internal/domain"
 	"github.com/arthurdotwork/chat/internal/infrastructure/log"
-
-	"github.com/spf13/cobra"
+	grpcserver "google.golang.org/grpc"
 )
 
 func main() {
@@ -27,43 +32,69 @@ func main() {
 		cancel()
 	}()
 
-	rootCmd := &cobra.Command{
-		Use:   "chat",
-		Short: "Chat is a simple chat application",
+	if err := run(ctx); err != nil {
+		slog.ErrorContext(ctx, "error running server", "error", err)
 	}
-	rootCmd.PersistentFlags().BoolP("help", "", false, "help for this command")
+}
 
-	serverCmd := &cobra.Command{
-		Use:   "server",
-		Short: "Start the chat server",
-		RunE: func(c *cobra.Command, args []string) error {
-			if err := cmd.Server(ctx, c); err != nil {
-				slog.ErrorContext(ctx, "error starting server", "error", err)
-				return err
-			}
+func run(ctx context.Context) error {
+	memoryRoomStore := store.NewMemoryRoomStore()
+	chatService := domain.NewChatService(memoryRoomStore)
+	chatServer := grpc.NewChatServer(chatService)
 
-			return nil
-		},
-	}
+	srv := grpcserver.NewServer()
+	proto.RegisterChatServiceServer(srv, chatServer)
 
-	rootCmd.AddCommand(serverCmd)
+	addr := fmt.Sprintf(":%s", env("GRPC_PORT", "56000"))
 
-	clientCmd := &cobra.Command{
-		Use:   "client",
-		Short: "Start the chat client",
-		RunE: func(c *cobra.Command, args []string) error {
-			if err := cmd.Client(ctx, c); err != nil {
-				slog.ErrorContext(ctx, "error starting client", "error", err)
-				return err
-			}
-
-			return nil
-		},
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("net.Listen: %w", err)
 	}
 
-	rootCmd.AddCommand(clientCmd)
+	sink := make(chan error, 1)
 
-	if err := rootCmd.Execute(); err != nil {
-		slog.ErrorContext(ctx, "error executing command", "error", err)
+	go func() {
+		if err := srv.Serve(lis); err != nil {
+			slog.ErrorContext(ctx, "error serving", "error", err)
+			sink <- err
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		slog.DebugContext(ctx, "initiating server shutdown")
+
+		go func() {
+			srv.GracefulStop()
+		}()
+
+		// Channel to signal shutdown completion
+		done := make(chan struct{})
+
+		if err := chatService.Close(context.WithoutCancel(ctx), done); err != nil {
+			slog.ErrorContext(ctx, "error closing chat service", "error", err)
+		}
+
+		<-done
+
+		// Create a timeout context for graceful shutdown
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+
+		<-shutdownCtx.Done()
+		srv.Stop()
+	case err := <-sink:
+		return fmt.Errorf("srv.Serve: %w", err)
 	}
+
+	return nil
+}
+
+func env(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+
+	return fallback
 }

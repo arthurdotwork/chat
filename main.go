@@ -2,22 +2,15 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
-	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc"
-	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc/gen/proto"
-	"github.com/arthurdotwork/chat/internal/adapters/secondary/store"
-	"github.com/arthurdotwork/chat/internal/domain"
+	"github.com/arthurdotwork/chat/cmd"
 	"github.com/arthurdotwork/chat/internal/infrastructure/log"
 
 	"github.com/spf13/cobra"
-	grpcserver "google.golang.org/grpc"
 )
 
 func main() {
@@ -43,87 +36,13 @@ func main() {
 	serverCmd := &cobra.Command{
 		Use:   "server",
 		Short: "Start the chat server",
-		Run: func(cmd *cobra.Command, args []string) {
-			memoryRoomStore := store.NewMemoryRoomStore()
-			chatService := domain.NewChatService(memoryRoomStore)
-
-			chatServer := grpc.NewChatServer(chatService)
-
-			srv := grpcserver.NewServer()
-			proto.RegisterChatServiceServer(srv, chatServer)
-
-			addr := fmt.Sprintf(":%d", 56001)
-			lis, err := net.Listen("tcp", addr)
-			if err != nil {
-				slog.ErrorContext(ctx, "error listening", "error", err)
-				return
+		RunE: func(c *cobra.Command, args []string) error {
+			if err := cmd.Server(ctx, c); err != nil {
+				slog.ErrorContext(ctx, "error starting server", "error", err)
+				return err
 			}
 
-			sink := make(chan error, 1)
-
-			slog.DebugContext(ctx, "starting server", "address", addr)
-
-			go func() {
-				slog.DebugContext(ctx, "server started", "address", addr)
-				if err := srv.Serve(lis); err != nil {
-					slog.ErrorContext(ctx, "error serving", "error", err)
-					sink <- err
-				}
-			}()
-
-			go func() {
-				tickEachSecond := time.NewTicker(1 * time.Second)
-				defer tickEachSecond.Stop()
-
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					case <-tickEachSecond.C:
-						conn, err := grpcserver.DialContext(ctx, addr, grpcserver.WithInsecure())
-						if err != nil {
-							slog.ErrorContext(ctx, "error dialing", "error", err)
-							return
-						}
-						conn.Close()
-
-						connectedUsers, err := memoryRoomStore.GetConnectedUsers(ctx)
-						if err != nil {
-							slog.ErrorContext(ctx, "error getting connected users", "error", err)
-							continue
-						}
-
-						slog.DebugContext(ctx, "connected users", "count", len(connectedUsers))
-					}
-				}
-			}()
-
-			select {
-			case <-ctx.Done():
-				slog.DebugContext(ctx, "initiating server shutdown")
-
-				go func() {
-					srv.GracefulStop()
-				}()
-
-				// Channel to signal shutdown completion
-				done := make(chan struct{})
-
-				if err := chatService.Close(context.WithoutCancel(ctx), done); err != nil {
-					slog.ErrorContext(ctx, "error closing chat service", "error", err)
-				}
-
-				<-done
-
-				// Create a timeout context for graceful shutdown
-				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer shutdownCancel()
-
-				<-shutdownCtx.Done()
-				srv.Stop()
-			case err := <-sink:
-				slog.ErrorContext(ctx, "error serving", "error", err)
-			}
+			return nil
 		},
 	}
 

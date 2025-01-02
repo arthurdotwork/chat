@@ -17,6 +17,7 @@ import (
 type ChatService interface {
 	Join(ctx context.Context, user domain.User) (domain.User, error)
 	SendMessage(ctx context.Context, message domain.Message) error
+	Disconnect(ctx context.Context, user domain.User) error
 }
 
 type ChatServer struct {
@@ -106,6 +107,14 @@ func (s *ChatServer) Chat(stream proto.ChatService_ChatServer) error {
 
 	select {
 	case <-ctx.Done():
+		if connectedUser == nil {
+			return nil
+		}
+
+		if err := s.chatService.Disconnect(ctx, *connectedUser); err != nil {
+			slog.ErrorContext(ctx, "error disconnecting user", "error", err)
+		}
+
 		slog.DebugContext(ctx, "client disconnected")
 		return nil
 	case err := <-sink:

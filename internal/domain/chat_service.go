@@ -67,3 +67,29 @@ func (s *ChatService) SendMessage(ctx context.Context, message Message) error {
 
 	return nil
 }
+
+func (s *ChatService) Disconnect(ctx context.Context, user User) error {
+	if err := s.roomStore.Disconnect(ctx, user); err != nil {
+		return fmt.Errorf("roomStore.Disconnect: %w", err)
+	}
+
+	connectedUsers, err := s.roomStore.GetConnectedUsers(ctx)
+	if err != nil {
+		return fmt.Errorf("roomStore.GetConnectedUsers: %w", err)
+	}
+
+	for _, u := range connectedUsers {
+		if u.ID == user.ID {
+			continue
+		}
+
+		if err := u.Messenger.SendMessage(ctx, Message{
+			Content: fmt.Sprintf("%s has left the room", user.Name),
+			Sender:  user,
+		}); err != nil {
+			return fmt.Errorf("messenger.SendMessage: %w", err)
+		}
+	}
+
+	return nil
+}

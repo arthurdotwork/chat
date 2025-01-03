@@ -99,3 +99,18 @@ func (s *ChatService) Close(ctx context.Context, done chan struct{}) error {
 
 	return nil
 }
+
+func (s *ChatService) Broadcast(ctx context.Context, message Message) error {
+	connectedUsers, err := s.roomStore.GetConnectedUsers(ctx)
+	if err != nil {
+		return fmt.Errorf("roomStore.GetConnectedUsers: %w", err)
+	}
+
+	for _, u := range connectedUsers {
+		if err := u.Messenger.SendMessage(ctx, message); err != nil {
+			slog.ErrorContext(ctx, "error broadcasting message", "error", err)
+		}
+	}
+
+	return nil
+}

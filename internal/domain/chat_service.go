@@ -95,6 +95,8 @@ func (s *ChatService) Disconnect(ctx context.Context, user User) error {
 }
 
 func (s *ChatService) Close(ctx context.Context, done chan struct{}) error {
+	defer close(done)
+
 	connectedUsers, err := s.roomStore.GetConnectedUsers(ctx)
 	if err != nil {
 		return fmt.Errorf("roomStore.GetConnectedUsers: %w", err)
@@ -102,11 +104,9 @@ func (s *ChatService) Close(ctx context.Context, done chan struct{}) error {
 
 	for _, u := range connectedUsers {
 		if err := u.Messenger.SendServerClosingNotification(ctx); err != nil {
-			return fmt.Errorf("messenger.SendServerClosingNotification: %w", err)
+			slog.ErrorContext(ctx, "error sending server closing notification", "error", err)
 		}
 	}
-
-	close(done)
 
 	return nil
 }

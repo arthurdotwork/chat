@@ -9,7 +9,7 @@ import (
 
 func Config(ctx context.Context) {
 	jsonHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
+		Level: slog.LevelInfo,
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == "level" {
 				lowerCaseLevel := strings.ToLower(a.Value.String())

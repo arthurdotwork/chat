@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -12,9 +13,11 @@ import (
 
 	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc"
 	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc/gen/proto"
+	broadcaster2 "github.com/arthurdotwork/chat/internal/adapters/secondary/broadcaster"
 	"github.com/arthurdotwork/chat/internal/adapters/secondary/store"
 	"github.com/arthurdotwork/chat/internal/domain"
 	"github.com/arthurdotwork/chat/internal/infrastructure/log"
+	"github.com/arthurdotwork/chat/internal/infrastructure/redis"
 	grpcserver "google.golang.org/grpc"
 )
 
@@ -38,8 +41,11 @@ func main() {
 }
 
 func run(ctx context.Context) error {
+	redisClient := redis.NewClient(env("REDIS_ADDR", "localhost:6379"))
+
 	memoryRoomStore := store.NewMemoryRoomStore()
-	chatService := domain.NewChatService(memoryRoomStore)
+	redisBroadcaster := broadcaster2.NewBroadcaster(redisClient)
+	chatService := domain.NewChatService(memoryRoomStore, redisBroadcaster)
 	chatServer := grpc.NewChatServer(chatService)
 
 	srv := grpcserver.NewServer()
@@ -57,6 +63,39 @@ func run(ctx context.Context) error {
 	go func() {
 		if err := srv.Serve(lis); err != nil {
 			slog.ErrorContext(ctx, "error serving", "error", err)
+			sink <- err
+		}
+	}()
+
+	go func() {
+		subscriber := redisClient.Subscribe(ctx, "chat")
+
+		slog.DebugContext(ctx, "subscribing to redis channel", "channel", "chat")
+
+		if err := subscriber(func(msg redis.Message) error {
+			slog.DebugContext(ctx, "received message from redis", "message", msg.Payload)
+
+			var m domain.Message
+			if err := json.Unmarshal([]byte(msg.Payload), &m); err != nil {
+				return fmt.Errorf("json.Unmarshal: %w", err)
+			}
+
+			slog.DebugContext(ctx, "broadcasting message to connected users", "message", fmt.Sprintf("%+v", m))
+
+			connectedUsers, err := memoryRoomStore.GetConnectedUsers(ctx)
+			if err != nil {
+				return fmt.Errorf("roomStore.GetConnectedUsers: %w", err)
+			}
+
+			for _, u := range connectedUsers {
+				if err := u.Messenger.SendMessage(ctx, m); err != nil {
+					return fmt.Errorf("messenger.SendMessage: %w", err)
+				}
+			}
+
+			return nil
+		}); err != nil {
+			slog.ErrorContext(ctx, "error subscribing to redis", "error", err)
 			sink <- err
 		}
 	}()

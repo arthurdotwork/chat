@@ -17,3 +17,7 @@ type Messenger interface {
 	SendMessage(ctx context.Context, message Message) error
 	SendServerClosingNotification(ctx context.Context) error
 }
+
+type Broadcaster interface {
+	Broadcast(ctx context.Context, channel string, message Message) error
+}

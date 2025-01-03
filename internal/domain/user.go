@@ -5,5 +5,5 @@ import "github.com/google/uuid"
 type User struct {
 	ID        uuid.UUID
 	Name      string
-	Messenger Messenger
+	Messenger Messenger `json:"-"`
 }

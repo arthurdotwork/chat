@@ -7,11 +7,15 @@ import (
 )
 
 type ChatService struct {
-	roomStore RoomStore
+	roomStore   RoomStore
+	broadcaster Broadcaster
 }
 
-func NewChatService(roomStore RoomStore) *ChatService {
-	return &ChatService{roomStore: roomStore}
+func NewChatService(roomStore RoomStore, broadcaster Broadcaster) *ChatService {
+	return &ChatService{
+		roomStore:   roomStore,
+		broadcaster: broadcaster,
+	}
 }
 
 func (s *ChatService) Join(ctx context.Context, user User) (User, error) {
@@ -19,26 +23,11 @@ func (s *ChatService) Join(ctx context.Context, user User) (User, error) {
 		return User{}, fmt.Errorf("roomStore.Connect: %w", err)
 	}
 
-	connectedUsers, err := s.roomStore.GetConnectedUsers(ctx)
-	if err != nil {
-		return User{}, fmt.Errorf("roomStore.GetConnectedUsers: %w", err)
-	}
-
-	slog.DebugContext(ctx, "dispatching message to connected users", "connected_users", len(connectedUsers))
-
-	for _, u := range connectedUsers {
-		if u.ID == user.ID {
-			continue
-		}
-
-		slog.DebugContext(ctx, "dispatching message to user", "user", u.Name)
-
-		if err := u.Messenger.SendMessage(ctx, Message{
-			Content: fmt.Sprintf("%s has joined the room", user.Name),
-			Sender:  user,
-		}); err != nil {
-			return User{}, fmt.Errorf("messenger.SendMessage: %w", err)
-		}
+	if err := s.broadcaster.Broadcast(ctx, "chat", Message{
+		Content: fmt.Sprintf("%s has joined the room", user.Name),
+		Sender:  user,
+	}); err != nil {
+		return User{}, fmt.Errorf("broadcaster.Broadcast: %w", err)
 	}
 
 	return user, nil

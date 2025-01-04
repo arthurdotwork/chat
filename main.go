@@ -18,6 +18,7 @@ import (
 	"github.com/arthurdotwork/chat/internal/domain"
 	"github.com/arthurdotwork/chat/internal/infrastructure/log"
 	"github.com/arthurdotwork/chat/internal/infrastructure/redis"
+	"github.com/arthurdotwork/chat/internal/infrastructure/runner"
 	grpcserver "google.golang.org/grpc"
 )
 
@@ -32,6 +33,7 @@ func main() {
 
 	go func() {
 		<-sig
+		slog.DebugContext(ctx, "received signal, initiating shutdown")
 		cancel()
 	}()
 
@@ -49,59 +51,93 @@ func run(ctx context.Context) error {
 	chatServer := grpc.NewChatServer(chatService)
 
 	srv := grpcserver.NewServer()
-	proto.RegisterChatServiceServer(srv, chatServer)
 
-	sink := make(chan error, 1)
-
-	go func() {
-		addr := fmt.Sprintf(":%s", env("GRPC_PORT", "56000"))
-
-		lis, err := net.Listen("tcp", addr)
-		if err != nil {
-			slog.ErrorContext(ctx, "error listening", "error", err)
-			sink <- err
-		}
-
-		if err := srv.Serve(lis); err != nil {
-			slog.ErrorContext(ctx, "error serving", "error", err)
-			sink <- err
-		}
-	}()
-
-	sub := subscriber.NewSubscriber(redisClient, chatService)
-	go func() {
-		if err := sub.Subscribe(ctx, "chat"); err != nil {
-			slog.ErrorContext(ctx, "error subscribing", "error", err)
-			sink <- err
-		}
-	}()
-
-	select {
-	case <-ctx.Done():
-		slog.DebugContext(ctx, "initiating server shutdown")
+	r := runner.New(ctx)
+	r.Go(func() error {
+		errCh := make(chan error, 1)
 
 		go func() {
-			srv.GracefulStop()
+			proto.RegisterChatServiceServer(srv, chatServer)
+
+			addr := fmt.Sprintf(":%s", env("GRPC_PORT", "56000"))
+
+			slog.DebugContext(ctx, "starting server", "address", addr)
+
+			lis, err := net.Listen("tcp", addr)
+			if err != nil {
+				slog.ErrorContext(ctx, "error listening", "error", err)
+				errCh <- fmt.Errorf("net.Listen: %w", err)
+				return
+			}
+
+			if err := srv.Serve(lis); err != nil {
+				slog.ErrorContext(ctx, "error serving", "error", err)
+				errCh <- fmt.Errorf("srv.Serve: %w", err)
+				return
+			}
+
+			slog.DebugContext(ctx, "server stopped", "address", addr)
+			errCh <- nil
 		}()
 
-		// Channel to signal shutdown completion
-		done := make(chan struct{})
+		select {
+		case <-ctx.Done():
+			slog.DebugContext(ctx, "context done, stopping server")
+			return ctx.Err()
+		case err := <-errCh:
+			return err
+		}
+	})
 
-		if err := chatService.Close(context.WithoutCancel(ctx), done); err != nil {
-			slog.ErrorContext(ctx, "error closing chat service", "error", err)
+	r.Go(func() error {
+		sub := subscriber.NewSubscriber(redisClient, chatService)
+		errCh := make(chan error, 1)
+
+		go func() {
+			errCh <- sub.Subscribe(ctx, "chat")
+		}()
+
+		select {
+		case <-ctx.Done():
+			slog.DebugContext(ctx, "context done, stopping subscriber")
+			return ctx.Err()
+		case err := <-errCh:
+			if err != nil {
+				slog.ErrorContext(ctx, "error subscribing", "error", err)
+				return fmt.Errorf("sub.Subscribe: %w", err)
+			}
 		}
 
-		<-done
+		slog.DebugContext(ctx, "subscriber stopped")
+		return nil
+	})
 
-		// Create a timeout context for graceful shutdown
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-
-		<-shutdownCtx.Done()
-		srv.Stop()
-	case err := <-sink:
-		return fmt.Errorf("srv.Serve: %w", err)
+	if err := r.Wait(); err != nil {
+		slog.ErrorContext(ctx, "error running server", "error", err)
+		return fmt.Errorf("errGroup.Wait: %w", err)
 	}
+
+	slog.DebugContext(ctx, "initiating server shutdown")
+
+	go func() {
+		srv.GracefulStop()
+	}()
+
+	// Channel to signal shutdown completion
+	done := make(chan struct{})
+
+	if err := chatService.Close(context.WithoutCancel(ctx), done); err != nil {
+		slog.ErrorContext(ctx, "error closing chat service", "error", err)
+	}
+
+	<-done
+
+	// Create a timeout context for graceful shutdown
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+
+	<-shutdownCtx.Done()
+	srv.Stop()
 
 	return nil
 }
@@ -112,4 +148,10 @@ func env(key, fallback string) string {
 	}
 
 	return fallback
+}
+
+func handleWithContext(ctx context.Context, err error) {
+	if err != nil {
+		slog.ErrorContext(ctx, "error", "error", err)
+	}
 }

@@ -2,123 +2,77 @@ package grpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"sync"
+	"net"
+	"time"
 
 	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc/gen/proto"
-	"github.com/arthurdotwork/chat/internal/adapters/secondary/messenger"
-	"github.com/arthurdotwork/chat/internal/domain"
-	"github.com/google/uuid"
+	"google.golang.org/grpc"
 )
-
-type ChatService interface {
-	Join(ctx context.Context, user domain.User) (domain.User, error)
-	SendMessage(ctx context.Context, message domain.Message) error
-	Disconnect(ctx context.Context, user domain.User) error
-}
 
 type ChatServer struct {
 	proto.UnimplementedChatServiceServer
 	chatService ChatService
+	chatHandler *ChatHandler
+
+	srv  *grpc.Server
+	addr string
 }
 
-func NewChatServer(chatService ChatService) *ChatServer {
-	return &ChatServer{
+func NewChatServer(chatService ChatService, addr string) *ChatServer {
+	srv := grpc.NewServer()
+	chatHandler := NewChatHandler(chatService)
+
+	chatServer := &ChatServer{
 		chatService: chatService,
+		chatHandler: chatHandler,
+		srv:         srv,
+		addr:        addr,
 	}
+
+	proto.RegisterChatServiceServer(srv, chatServer)
+	return chatServer
 }
 
 func (s *ChatServer) Chat(stream proto.ChatService_ChatServer) error {
-	ctx := stream.Context()
+	return s.chatHandler.Chat(stream)
+}
 
-	var (
-		sink          = make(chan error, 1)
-		wg            sync.WaitGroup
-		connectedUser *domain.User
-	)
+func (s *ChatServer) Run(ctx context.Context) error {
+	lis, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		slog.ErrorContext(ctx, "error listening", "error", err)
+		return fmt.Errorf("net.Listen: %w", err)
+	}
 
-	slog.DebugContext(ctx, "client connected")
-	messageManager := messenger.NewMessenger(stream)
+	if err := s.srv.Serve(lis); err != nil {
+		slog.ErrorContext(ctx, "error serving", "error", err)
+		return fmt.Errorf("srv.Serve: %w", err)
+	}
 
-	wg.Add(1)
+	return nil
+}
+
+func (s *ChatServer) Close(ctx context.Context) error {
+	gracefulShutdownCompleted := make(chan bool, 1)
 	go func() {
-		defer wg.Done()
-		for {
-			msg, err := stream.Recv()
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					return
-				}
-
-				sink <- fmt.Errorf("error receiving message: %w", err)
-				return
-			}
-
-			switch m := msg.Message.(type) {
-			case *proto.ClientMessage_Join:
-				if connectedUser != nil {
-					continue
-				}
-
-				user := domain.User{
-					ID:        uuid.New(),
-					Name:      m.Join.UserName,
-					Messenger: messageManager,
-				}
-
-				u, err := s.chatService.Join(ctx, user)
-				if err != nil {
-					sink <- fmt.Errorf("error joining chat: %w", err)
-					return
-				}
-
-				connectedUser = &u
-
-				_ = stream.Send(&proto.ServerMessage{
-					Message: &proto.ServerMessage_JoinResponse{
-						JoinResponse: &proto.JoinResponse{
-							Success: true,
-						},
-					},
-				})
-			case *proto.ClientMessage_Chat:
-				if connectedUser == nil {
-					continue
-				}
-
-				message := domain.Message{
-					Content: m.Chat.Content,
-					Sender:  *connectedUser,
-				}
-
-				if err := s.chatService.SendMessage(ctx, message); err != nil {
-					sink <- fmt.Errorf("error sending message: %w", err)
-					return
-				}
-			default:
-				slog.ErrorContext(ctx, "unknown message type", "message", m)
-				sink <- fmt.Errorf("unknown message type")
-			}
+		if err := s.chatService.Close(ctx); err != nil {
+			slog.ErrorContext(ctx, "error closing chat service", "error", err)
 		}
+
+		s.srv.GracefulStop()
+
+		gracefulShutdownCompleted <- true
 	}()
 
-	select {
-	case <-ctx.Done():
-		if connectedUser == nil {
+	for {
+		select {
+		case <-gracefulShutdownCompleted:
+			return nil
+		case <-time.After(15 * time.Second):
+			s.srv.Stop()
 			return nil
 		}
-
-		if err := s.chatService.Disconnect(ctx, *connectedUser); err != nil {
-			slog.ErrorContext(ctx, "error disconnecting user", "error", err)
-		}
-
-		slog.DebugContext(ctx, "client disconnected")
-		return nil
-	case err := <-sink:
-		slog.ErrorContext(ctx, "error handling message", "error", err)
-		return fmt.Errorf("error handling message: %w", err)
 	}
 }

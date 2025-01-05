@@ -207,10 +207,8 @@ func TestChatService_Close(t *testing.T) {
 	t.Run("it should return an error if it can not get the connected users", func(t *testing.T) {
 		roomStore.On("GetConnectedUsers", ctx).Return(nil, fmt.Errorf("error")).Once()
 
-		done := make(chan struct{})
-		err := chatService.Close(ctx, done)
+		err := chatService.Close(ctx)
 		require.Error(t, err)
-		require.Len(t, done, 0)
 	})
 
 	t.Run("it should send the message to all connected users", func(t *testing.T) {
@@ -224,8 +222,7 @@ func TestChatService_Close(t *testing.T) {
 
 		messenger.On("SendServerClosingNotification", ctx).Return(nil).Once()
 
-		done := make(chan struct{})
-		err := chatService.Close(ctx, done)
+		err := chatService.Close(ctx)
 		require.NoError(t, err)
 	})
 }

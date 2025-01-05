@@ -83,9 +83,7 @@ func (s *ChatService) Disconnect(ctx context.Context, user User) error {
 	return nil
 }
 
-func (s *ChatService) Close(ctx context.Context, done chan struct{}) error {
-	defer close(done)
-
+func (s *ChatService) Close(ctx context.Context) error {
 	connectedUsers, err := s.roomStore.GetConnectedUsers(ctx)
 	if err != nil {
 		return fmt.Errorf("roomStore.GetConnectedUsers: %w", err)

@@ -37,15 +37,10 @@ func (m *Messenger) SendServerClosingNotification(ctx context.Context) error {
 		},
 	}
 
-	slog.DebugContext(ctx, "sending server closing notification",
-		"message", fmt.Sprintf("%+v", msg),
-		"message_type", fmt.Sprintf("%T", msg.Message))
-
 	if err := m.Stream.Send(msg); err != nil {
 		slog.ErrorContext(ctx, "failed to send server closing", "error", err)
 		return fmt.Errorf("stream.Send: %w", err)
 	}
 
-	slog.DebugContext(ctx, "server closing notification sent")
 	return nil
 }

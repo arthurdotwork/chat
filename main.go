@@ -4,22 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc"
-	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc/gen/proto"
-	subscriber "github.com/arthurdotwork/chat/internal/adapters/primary/redis"
 	"github.com/arthurdotwork/chat/internal/adapters/secondary/broadcaster"
 	"github.com/arthurdotwork/chat/internal/adapters/secondary/store"
 	"github.com/arthurdotwork/chat/internal/domain"
 	"github.com/arthurdotwork/chat/internal/infrastructure/log"
 	"github.com/arthurdotwork/chat/internal/infrastructure/redis"
-	"github.com/arthurdotwork/chat/internal/infrastructure/runner"
-	grpcserver "google.golang.org/grpc"
+	"golang.org/x/sync/errgroup"
 )
 
 func main() {
@@ -33,7 +28,7 @@ func main() {
 
 	go func() {
 		<-sig
-		slog.DebugContext(ctx, "received signal, initiating shutdown")
+		slog.DebugContext(ctx, "shutdown initiated")
 		cancel()
 	}()
 
@@ -43,53 +38,37 @@ func main() {
 }
 
 func run(ctx context.Context) error {
+	grpcAddress := fmt.Sprintf(":%s", env("GRPC_PORT", "56000"))
+
 	redisClient := redis.NewClient(env("REDIS_ADDR", "localhost:6379"))
 
 	memoryRoomStore := store.NewMemoryRoomStore()
 	redisBroadcaster := broadcaster.NewBroadcaster(redisClient)
 	chatService := domain.NewChatService(memoryRoomStore, redisBroadcaster)
-	chatServer := grpc.NewChatServer(chatService)
+	chatServer := grpc.NewChatServer(chatService, grpcAddress)
 
-	srv := grpcserver.NewServer()
-
-	r := runner.New(ctx)
-	r.Go(func() error {
-		errCh := make(chan error, 1)
-
-		go func() {
-			proto.RegisterChatServiceServer(srv, chatServer)
-
-			addr := fmt.Sprintf(":%s", env("GRPC_PORT", "56000"))
-
-			slog.DebugContext(ctx, "starting server", "address", addr)
-
-			lis, err := net.Listen("tcp", addr)
-			if err != nil {
-				slog.ErrorContext(ctx, "error listening", "error", err)
-				errCh <- fmt.Errorf("net.Listen: %w", err)
-				return
-			}
-
-			if err := srv.Serve(lis); err != nil {
-				slog.ErrorContext(ctx, "error serving", "error", err)
-				errCh <- fmt.Errorf("srv.Serve: %w", err)
-				return
-			}
-
-			slog.DebugContext(ctx, "server stopped", "address", addr)
-			errCh <- nil
-		}()
-
-		select {
-		case <-ctx.Done():
-			slog.DebugContext(ctx, "context done, stopping server")
-			return ctx.Err()
-		case err := <-errCh:
-			return err
+	g, _ := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		slog.DebugContext(ctx, "starting grpc server", "address", grpcAddress)
+		if err := chatServer.Run(ctx); err != nil {
+			slog.ErrorContext(ctx, "error running grpc server", "error", err)
+			return fmt.Errorf("chatServer.Run: %w", err)
 		}
+
+		return nil
 	})
 
-	r.Go(func() error {
+	g.Go(func() error {
+		<-ctx.Done()
+
+		if err := chatServer.Close(context.WithoutCancel(ctx)); err != nil {
+			slog.ErrorContext(ctx, "error closing chat service", "error", err)
+		}
+
+		return nil
+	})
+
+	/*g.Go(func() error {
 		sub := subscriber.NewSubscriber(redisClient, chatService)
 		errCh := make(chan error, 1)
 
@@ -110,35 +89,14 @@ func run(ctx context.Context) error {
 
 		slog.DebugContext(ctx, "subscriber stopped")
 		return nil
-	})
+	})*/
 
-	if err := r.Wait(); err != nil {
+	if err := g.Wait(); err != nil {
 		slog.ErrorContext(ctx, "error running server", "error", err)
 		return fmt.Errorf("errGroup.Wait: %w", err)
 	}
 
-	slog.DebugContext(ctx, "initiating server shutdown")
-
-	go func() {
-		srv.GracefulStop()
-	}()
-
-	// Channel to signal shutdown completion
-	done := make(chan struct{})
-
-	if err := chatService.Close(context.WithoutCancel(ctx), done); err != nil {
-		slog.ErrorContext(ctx, "error closing chat service", "error", err)
-	}
-
-	<-done
-
-	// Create a timeout context for graceful shutdown
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutdownCancel()
-
-	<-shutdownCtx.Done()
-	srv.Stop()
-
+	slog.DebugContext(ctx, "processing shutdown")
 	return nil
 }
 

@@ -29,11 +29,7 @@ func NewSubscriber(redisClient *redis.Client, localBroadcasterService LocalBroad
 func (s *Subscriber) Subscribe(ctx context.Context, channel string) error {
 	subscriber := s.redisClient.Subscribe(ctx, channel)
 
-	slog.DebugContext(ctx, "subscribing to redis channel", "channel", channel)
-
 	if err := subscriber(func(msg redis.Message) error {
-		slog.DebugContext(ctx, "received message from redis", "message", msg.Payload)
-
 		var m domain.Message
 		if err := json.Unmarshal([]byte(msg.Payload), &m); err != nil {
 			return fmt.Errorf("json.Unmarshal: %w", err)

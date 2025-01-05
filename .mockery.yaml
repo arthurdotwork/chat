@@ -3,3 +3,6 @@ with-expecter: true
 dir: "{{.InterfaceDir}}/mocks"
 outpkg: mocks
 packages:
+  github.com/arthurdotwork/chat/internal/domain:
+    config:
+      all: true

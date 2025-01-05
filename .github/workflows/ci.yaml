@@ -27,8 +27,8 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: |
-            ~/go/bin
-            ~/go/pkg/mod
+            ~/go/bin/mockery
+            ~/go/bin/golangci-lint
           key: ${{ runner.os }}-go-binary-tools-${{ hashFiles('**/go.sum') }}
           restore-keys: |
             ${{ runner.os }}-go-binary-tools-

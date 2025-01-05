@@ -149,9 +149,3 @@ func env(key, fallback string) string {
 
 	return fallback
 }
-
-func handleWithContext(ctx context.Context, err error) {
-	if err != nil {
-		slog.ErrorContext(ctx, "error", "error", err)
-	}
-}

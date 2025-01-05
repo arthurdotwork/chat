@@ -29,6 +29,7 @@ jobs:
           path: |
             ~/go/bin/mockery
             ~/go/bin/golangci-lint
+            ~/go/bin/gotestsum
           key: ${{ runner.os }}-go-binary-tools-${{ hashFiles('**/go.sum') }}
           restore-keys: |
             ${{ runner.os }}-go-binary-tools-

@@ -38,6 +38,8 @@ tasks:
       - gotestsum --junitfile=unit-tests.xml -- -timeout 30s -race -parallel $PARALLEL -count=1 ./...
 
   mocks:install:
+    status:
+      - test -f $GOPATH/bin/mockery
     cmds:
       - go install github.com/vektra/mockery/v2@v2.42.0
 

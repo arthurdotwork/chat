@@ -9,11 +9,12 @@ import (
 	"syscall"
 
 	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc"
+	"github.com/arthurdotwork/chat/internal/adapters/primary/pubsub"
 	"github.com/arthurdotwork/chat/internal/adapters/secondary/broadcaster"
 	"github.com/arthurdotwork/chat/internal/adapters/secondary/store"
 	"github.com/arthurdotwork/chat/internal/domain"
 	"github.com/arthurdotwork/chat/internal/infrastructure/log"
-	"github.com/arthurdotwork/chat/internal/infrastructure/redis"
+	ps "github.com/arthurdotwork/chat/internal/infrastructure/pubsub"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -39,13 +40,17 @@ func main() {
 
 func run(ctx context.Context) error {
 	grpcAddress := fmt.Sprintf(":%s", env("GRPC_PORT", "56000"))
+	redisAddr := env("REDIS_ADDR", "localhost:6379")
 
-	redisClient := redis.NewClient(env("REDIS_ADDR", "localhost:6379"))
+	pubsubSubscriber := ps.NewSubscriber(redisAddr)
+	pubsubPublisher := ps.NewPublisher(redisAddr)
 
 	memoryRoomStore := store.NewMemoryRoomStore()
-	redisBroadcaster := broadcaster.NewBroadcaster(redisClient)
+	redisBroadcaster := broadcaster.NewBroadcaster(pubsubPublisher)
 	chatService := domain.NewChatService(memoryRoomStore, redisBroadcaster)
 	chatServer := grpc.NewChatServer(chatService, grpcAddress)
+
+	chatSubscriber := pubsub.NewSubscriber(pubsubSubscriber, chatService)
 
 	g, _ := errgroup.WithContext(ctx)
 	g.Go(func() error {
@@ -68,28 +73,25 @@ func run(ctx context.Context) error {
 		return nil
 	})
 
-	/*g.Go(func() error {
-		sub := subscriber.NewSubscriber(redisClient, chatService)
-		errCh := make(chan error, 1)
+	g.Go(func() error {
+		slog.DebugContext(ctx, "starting pubsub subscriber")
 
-		go func() {
-			errCh <- sub.Subscribe(ctx, "chat")
-		}()
+		chatSubscriber.Subscribe(ctx, "chat")
 
-		select {
-		case <-ctx.Done():
-			slog.DebugContext(ctx, "context done, stopping subscriber")
-			return ctx.Err()
-		case err := <-errCh:
-			if err != nil {
-				slog.ErrorContext(ctx, "error subscribing", "error", err)
-				return fmt.Errorf("sub.Subscribe: %w", err)
-			}
+		if err := pubsubSubscriber.Start(); err != nil {
+			slog.ErrorContext(ctx, "error starting pubsub subscriber", "error", err)
+			return fmt.Errorf("pubsubSubscriber.Start: %w", err)
 		}
 
-		slog.DebugContext(ctx, "subscriber stopped")
 		return nil
-	})*/
+	})
+
+	g.Go(func() error {
+		<-ctx.Done()
+
+		pubsubSubscriber.Stop()
+		return nil
+	})
 
 	if err := g.Wait(); err != nil {
 		slog.ErrorContext(ctx, "error running server", "error", err)

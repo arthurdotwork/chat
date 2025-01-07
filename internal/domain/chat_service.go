@@ -23,7 +23,7 @@ func (s *ChatService) Join(ctx context.Context, user User) (User, error) {
 		return User{}, fmt.Errorf("roomStore.Connect: %w", err)
 	}
 
-	if err := s.broadcaster.Broadcast(ctx, "chat", Message{
+	if err := s.broadcaster.Broadcast(ctx, "chat-events", Message{
 		Content: fmt.Sprintf("%s has joined the room", user.Name),
 		Sender:  user,
 	}); err != nil {

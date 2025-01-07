@@ -35,7 +35,7 @@ func TestChatService_Join(t *testing.T) {
 
 	t.Run("it should return an error if it can not broadcast the message", func(t *testing.T) {
 		roomStore.On("Connect", ctx, user).Return(nil).Once()
-		broadcaster.On("Broadcast", ctx, "chat", domain.Message{
+		broadcaster.On("Broadcast", ctx, "chat-events", domain.Message{
 			Content: "arthur has joined the room",
 			Sender:  user,
 		}).Return(fmt.Errorf("error")).Once()
@@ -46,7 +46,7 @@ func TestChatService_Join(t *testing.T) {
 
 	t.Run("it should allow one user to join", func(t *testing.T) {
 		roomStore.On("Connect", ctx, user).Return(nil).Once()
-		broadcaster.On("Broadcast", ctx, "chat", domain.Message{
+		broadcaster.On("Broadcast", ctx, "chat-events", domain.Message{
 			Content: "arthur has joined the room",
 			Sender:  user,
 		}).Return(nil).Once()

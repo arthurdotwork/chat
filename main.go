@@ -7,9 +7,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/arthurdotwork/chat/internal/adapters/primary/grpc"
-	"github.com/arthurdotwork/chat/internal/adapters/primary/pubsub"
+	ppubsub "github.com/arthurdotwork/chat/internal/adapters/primary/pubsub"
 	"github.com/arthurdotwork/chat/internal/adapters/secondary/broadcaster"
 	"github.com/arthurdotwork/chat/internal/adapters/secondary/store"
 	"github.com/arthurdotwork/chat/internal/domain"
@@ -40,19 +41,30 @@ func main() {
 
 func run(ctx context.Context) error {
 	grpcAddress := fmt.Sprintf(":%s", env("GRPC_PORT", "56000"))
-	redisAddr := env("REDIS_ADDR", "localhost:6379")
 
-	pubsubSubscriber := ps.NewSubscriber(redisAddr)
-	pubsubPublisher := ps.NewPublisher(redisAddr)
+	pubsubClient, err := ps.NewClient(ctx, env("GCP_PROJECT_ID", "arthur-private"), env("GCP_CREDENTIALS_FILE_PATH", ".pubsub_service_account.json"))
+	if err != nil {
+		slog.ErrorContext(ctx, "error creating pubsub client", "error", err)
+		return fmt.Errorf("ps.NewClient: %w", err)
+	}
 
 	memoryRoomStore := store.NewMemoryRoomStore()
-	redisBroadcaster := broadcaster.NewBroadcaster(pubsubPublisher)
-	chatService := domain.NewChatService(memoryRoomStore, redisBroadcaster)
+	b := broadcaster.NewBroadcaster(pubsubClient)
+	chatService := domain.NewChatService(memoryRoomStore, b)
 	chatServer := grpc.NewChatServer(chatService, grpcAddress)
 
-	chatSubscriber := pubsub.NewSubscriber(pubsubSubscriber, chatService)
+	chatSubscriber := ppubsub.NewSubscriber(pubsubClient, chatService)
 
 	g, _ := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		if err := chatSubscriber.Subscribe(ctx, "chat-events"); err != nil {
+			slog.ErrorContext(ctx, "error subscribing to chat", "error", err)
+			return fmt.Errorf("chatSubscriber.Subscribe: %w", err)
+		}
+
+		return nil
+	})
+
 	g.Go(func() error {
 		slog.DebugContext(ctx, "starting grpc server", "address", grpcAddress)
 		if err := chatServer.Run(ctx); err != nil {
@@ -73,32 +85,13 @@ func run(ctx context.Context) error {
 		return nil
 	})
 
-	g.Go(func() error {
-		slog.DebugContext(ctx, "starting pubsub subscriber")
-
-		chatSubscriber.Subscribe(ctx, "chat")
-
-		if err := pubsubSubscriber.Start(); err != nil {
-			slog.ErrorContext(ctx, "error starting pubsub subscriber", "error", err)
-			return fmt.Errorf("pubsubSubscriber.Start: %w", err)
-		}
-
-		return nil
-	})
-
-	g.Go(func() error {
-		<-ctx.Done()
-
-		pubsubSubscriber.Stop()
-		return nil
-	})
-
 	if err := g.Wait(); err != nil {
 		slog.ErrorContext(ctx, "error running server", "error", err)
 		return fmt.Errorf("errGroup.Wait: %w", err)
 	}
 
 	slog.DebugContext(ctx, "processing shutdown")
+	time.Sleep(time.Second * 10)
 	return nil
 }
 

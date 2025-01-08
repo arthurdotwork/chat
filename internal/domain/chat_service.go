@@ -34,24 +34,12 @@ func (s *ChatService) Join(ctx context.Context, user User) (User, error) {
 }
 
 func (s *ChatService) SendMessage(ctx context.Context, message Message) error {
-	sender, err := s.roomStore.GetUser(ctx, message.Sender.ID)
-	if err != nil {
+	if _, err := s.roomStore.GetUser(ctx, message.Sender.ID); err != nil {
 		return fmt.Errorf("roomStore.GetUser: %w", err)
 	}
 
-	connectedUsers, err := s.roomStore.GetConnectedUsers(ctx)
-	if err != nil {
-		return fmt.Errorf("roomStore.GetConnectedUsers: %w", err)
-	}
-
-	for _, u := range connectedUsers {
-		if u.ID == sender.ID {
-			continue
-		}
-
-		if err := u.Messenger.SendMessage(ctx, message); err != nil {
-			return fmt.Errorf("messenger.SendMessage: %w", err)
-		}
+	if err := s.broadcaster.Broadcast(ctx, "chat-events", message); err != nil {
+		return fmt.Errorf("broadcaster.Broadcast: %w", err)
 	}
 
 	return nil

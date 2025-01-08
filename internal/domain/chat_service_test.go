@@ -85,39 +85,17 @@ func TestChatService_SendMessage(t *testing.T) {
 		require.Error(t, err)
 	})
 
-	t.Run("it should return an error if it can not get the connected users", func(t *testing.T) {
+	t.Run("it should return an error if it can not broadcast the message", func(t *testing.T) {
 		roomStore.On("GetUser", ctx, message.Sender.ID).Return(domain.User{}, nil).Once()
-		roomStore.On("GetConnectedUsers", ctx).Return(nil, fmt.Errorf("error")).Once()
+		broadcaster.On("Broadcast", ctx, "chat-events", message).Return(fmt.Errorf("error")).Once()
 
 		err := chatService.SendMessage(ctx, message)
 		require.Error(t, err)
 	})
 
-	t.Run("it should return an error if it can not send the message to a user", func(t *testing.T) {
+	t.Run("it should broadcast the message", func(t *testing.T) {
 		roomStore.On("GetUser", ctx, message.Sender.ID).Return(domain.User{}, nil).Once()
-		roomStore.On("GetConnectedUsers", ctx).Return([]domain.User{
-			{
-				ID:        uuid.New(),
-				Name:      "john",
-				Messenger: messenger,
-			},
-		}, nil).Once()
-		messenger.On("SendMessage", ctx, message).Return(fmt.Errorf("error")).Once()
-
-		err := chatService.SendMessage(ctx, message)
-		require.Error(t, err)
-	})
-
-	t.Run("it should send the message to all connected users", func(t *testing.T) {
-		roomStore.On("GetUser", ctx, message.Sender.ID).Return(domain.User{}, nil).Once()
-		roomStore.On("GetConnectedUsers", ctx).Return([]domain.User{
-			{
-				ID:        uuid.New(),
-				Name:      "john",
-				Messenger: messenger,
-			},
-		}, nil).Once()
-		messenger.On("SendMessage", ctx, message).Return(nil).Once()
+		broadcaster.On("Broadcast", ctx, "chat-events", message).Return(nil).Once()
 
 		err := chatService.SendMessage(ctx, message)
 		require.NoError(t, err)
